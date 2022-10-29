@@ -8,6 +8,7 @@ This reusable workflow can add a label and/or project to an issue, as well as se
 * **repo-project**, **user-project**, **org-project** - Define one (projects can live at the repo, user, or org level) or none of these; the name of the project to add the issue to.
 * **project-field** - An optional definition of a `field-name=value` pair to set on the project's entry for this issue. Only `TEXT` & `SINGLE_SELECT` field types are supported.
 * **token** - A required secret. This needs to have permissions to write to issues (if `label` is set), and write permission to projects if the project related options are set.
+* **skip-if-existing-project** - An optional boolean. If set to true and the issue is already assigned to any projects, no action will be taken.
 
 Example:
 ```yaml

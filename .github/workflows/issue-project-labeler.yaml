@@ -16,6 +16,8 @@ on:
         type: string
       project-field:
         type: string
+      skip-if-existing-project:
+        type: boolean
     secrets:
       token:
         required: true
@@ -36,14 +38,24 @@ jobs:
       ORG_PROJECT: ${{inputs.org-project}}
       PROJECT_FIELD: ${{inputs.project-field}}
     steps:
+      - name: Check If Action Should Be Performed
+        id: check-step
+        run: |
+          if [[ "${{inputs.skip-if-existing-project}}" == "false" ]]; then
+            echo ::set-output name=doit::true
+          elif curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"{ node(id: \"'"${ISSUE_ID}"'\") { ... on Issue { id, projectsV2(first: 1) { edges { node { id } } }}}}"}' https://api.github.com/graphql | jq -e .data.node.projectsV2.edges[0] > /dev/null; then
+            echo ::set-output name=doit::false
+          else
+            echo ::set-output name=doit::true
+          fi
       - name: Label Issue
-        if: inputs.label
+        if: fromJSON(steps.check-step.outputs.doit) && inputs.label
         run: |
           LABELID=$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"{ repository(owner: \"${{github.repository_owner}}\" name: \"${{github.event.repository.name}}\") { labels(first:1 query:\"'"${LABEL}"'\") { nodes { id } } }}"}' https://api.github.com/graphql | jq -e -r .data.repository.labels.nodes[0].id)
           curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"mutation {addLabelsToLabelable( input: { labelIds:\"'${LABELID}'\" labelableId:\"'"${ISSUE_ID}"'\" }) { clientMutationId }}"}' https://api.github.com/graphql | jq -e .data.addLabelsToLabelable > /dev/null
       - name: Discover Project ID
         id: project-step
-        if: inputs.repo-project || inputs.user-project || inputs.org-project
+        if: fromJSON(steps.check-step.outputs.doit) && (inputs.repo-project || inputs.user-project || inputs.org-project)
         run: |
           if ! [[ -z "${REPO_PROJECT}" ]]; then
             echo ::set-output name=project-id::$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"{repository(owner: \"${{github.repository_owner}}\" name: \"${{github.event.repository.name}}\") {projectsV2(first:1, query:\"'"${REPO_PROJECT}"'\") {nodes {id}}}}"}' https://api.github.com/graphql | jq -e -r .data.repository.projectsV2.nodes[0].id)
@@ -54,23 +66,23 @@ jobs:
           fi
       - name: Add To Project
         id: add-step
-        if: inputs.repo-project || inputs.user-project || inputs.org-project
+        if: fromJSON(steps.check-step.outputs.doit) && (inputs.repo-project || inputs.user-project || inputs.org-project)
         run: |
           echo ::set-output name=add-id::$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"mutation {addProjectV2ItemById(input: {projectId: \"${{steps.project-step.outputs.project-id}}\" contentId: \"'"${ISSUE_ID}"'\"}) {item {id}}}"}' https://api.github.com/graphql | jq -e -r .data.addProjectV2ItemById.item.id)
       - name: Get Field & Type
-        if: (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field
+        if: fromJSON(steps.check-step.outputs.doit) && (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field
         id: field-step
         run: |
           FIELDNAME=$(echo "${PROJECT_FIELD}" | cut -d= -f1)
           echo ::set-output name=field-id::$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"query{ node(id: \"${{steps.project-step.outputs.project-id}}\") { ... on ProjectV2 { field(name: \"'"${FIELDNAME}"'\") { ... on ProjectV2FieldCommon { id }}}}}"}' https://api.github.com/graphql | jq -e -r .data.node.field.id)
           echo ::set-output name=field-type::$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"query{ node(id: \"${{steps.project-step.outputs.project-id}}\") { ... on ProjectV2 { field(name: \"'"${FIELDNAME}"'\") { ... on ProjectV2FieldCommon { dataType }}}}}"}' https://api.github.com/graphql | jq -e -r .data.node.field.dataType)
       - name: Set Free Text Field
-        if: (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field && steps.field-step.outputs.field-type == 'TEXT'
+        if: fromJSON(steps.check-step.outputs.doit) && (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field && steps.field-step.outputs.field-type == 'TEXT'
         run: |
           FIELDTEXT=$(echo "${PROJECT_FIELD}" | cut -d= -f2)
           curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"mutation {updateProjectV2ItemFieldValue( input: { projectId: \"${{steps.project-step.outputs.project-id}}\" itemId: \"${{steps.add-step.outputs.add-id}}\" fieldId: \"${{steps.field-step.outputs.field-id}}\" value: { text: \"'"${FIELDTEXT}"'\" }}) { projectV2Item { id }}}"}' https://api.github.com/graphql | jq -e .data.updateProjectV2ItemFieldValue > /dev/null
       - name: Set Single Select Field
-        if: (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field && steps.field-step.outputs.field-type == 'SINGLE_SELECT'
+        if: fromJSON(steps.check-step.outputs.doit) && (inputs.repo-project || inputs.user-project || inputs.org-project) && inputs.project-field && steps.field-step.outputs.field-type == 'SINGLE_SELECT'
         run: |
           FIELDOPTION=$(echo "${PROJECT_FIELD}" | cut -d= -f2)
           FIELDOPTIONID=$(curl -s --header "Authorization: Bearer ${{secrets.token}}" --data '{"query":"query{ node(id: \"${{steps.field-step.outputs.field-id}}\") { ... on ProjectV2SingleSelectField { options { id, name } } } }"}' https://api.github.com/graphql | jq -e -r ".data.node.options[]|select(.name == \"${FIELDOPTION}\")|.id")
